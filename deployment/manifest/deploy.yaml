@@ -1,0 +1,116 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lifesub-web-config
+  namespace: kros235-lifesub-ns
+data:
+  EXPORT_PORT: "18080"
+  NODE_ENV: "production"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: runtime-env-config
+  namespace: kros235-lifesub-ns
+data:
+  runtime-env.js: |
+    window.__runtime_config__ = {
+      MEMBER_URL: 'http://kros235-lifesub.koreacentral.cloudapp.azure.com/api/auth',
+      MYSUB_URL: 'http://kros235-lifesub.koreacentral.cloudapp.azure.com/api/mysub',
+      RECOMMEND_URL: 'http://kros235-lifesub.koreacentral.cloudapp.azure.com/api/recommend'
+    };
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lifesub-web
+  namespace: kros235-lifesub-ns
+  labels:
+    app: lifesub-web
+    service: lifesub-web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: lifesub-web
+  template:
+    metadata:
+      labels:
+        app: lifesub-web
+        service: lifesub-web
+    spec:
+      imagePullSecrets:
+      - name: acr-secret
+      containers:
+      - name: lifesub-web
+        image: kros235.azurecr.io/kros235/lifesub-web:1.0.0
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 18080
+          name: http
+        envFrom:
+        - configMapRef:
+            name: lifesub-web-config
+        volumeMounts:
+        - name: runtime-env
+          mountPath: /usr/share/nginx/html/runtime-env.js
+          subPath: runtime-env.js
+        resources:
+          requests:
+            cpu: 256m
+            memory: 256Mi
+          limits:
+            cpu: 1024m
+            memory: 1024Mi
+      volumes:
+      - name: runtime-env
+        configMap:
+          name: runtime-env-config
+          
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: lifesub-web-service
+  namespace: kros235-lifesub-ns
+  labels:
+    app: lifesub-web
+    service: lifesub-web
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 18080
+    protocol: TCP
+    name: http
+  selector:
+    app: lifesub-web
+    
+---
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: lifesub-frontend-ingress
+  namespace: kros235-lifesub-ns
+  labels:
+    app: lifesub-web
+    tier: frontend
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+   
+spec:
+  rules:
+  - host: kros235.20.214.118.41.nip.io
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: lifesub-web-service
+            port:
+              number: 80
