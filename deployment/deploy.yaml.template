@@ -1,22 +1,41 @@
-# Frontend Deployment
+# ConfigMap for runtime environment
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: runtime-env-config
+  namespace: ${namespace}
+data:
+  runtime-env.js: |
+    window.__runtime_config__ = {
+      MEMBER_URL: 'http://${ingress_host}/api/auth',
+      MYSUB_URL: 'http://${ingress_host}/api/mysub',
+      RECOMMEND_URL: 'http://${ingress_host}/api/recommend'
+    };
+
+---
+# Deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: lifesub-web
+  name: ${service_name}
   namespace: ${namespace}
+  labels:
+    app: ${service_name}
 spec:
   replicas: ${replicas}
   selector:
     matchLabels:
-      app: lifesub-web
+      app: ${service_name}
   template:
     metadata:
       labels:
-        app: lifesub-web
+        app: ${service_name}
     spec:
+      imagePullSecrets:
+      - name: acr-secret
       containers:
-      - name: lifesub-web
-        image: ${lifesub_web_image_path}
+      - name: ${service_name}
+        image: ${image_path}
         imagePullPolicy: Always
         ports:
         - containerPort: ${export_port}
@@ -27,18 +46,41 @@ spec:
           limits:
             cpu: ${resources_limits_cpu}
             memory: ${resources_limits_memory}
+        livenessProbe:
+          httpGet:
+            path: /
+            port: ${export_port}
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: ${export_port}
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        volumeMounts:
+        - name: runtime-config
+          mountPath: /usr/share/nginx/html/runtime-env.js
+          subPath: runtime-env.js
+      volumes:
+      - name: runtime-config
+        configMap:
+          name: runtime-env-config
 
 ---
-# Frontend Service
+# Service
 apiVersion: v1
 kind: Service
 metadata:
-  name: lifesub-web
+  name: ${service_name}-service
   namespace: ${namespace}
+  labels:
+    app: ${service_name}
 spec:
-  selector:
-    app: lifesub-web
+  type: LoadBalancer
   ports:
   - port: 80
     targetPort: ${export_port}
-  type: LoadBalancer
+    protocol: TCP
+  selector:
+    app: ${service_name}
