@@ -1,0 +1,127 @@
+def PIPELINE_ID = "${env.BUILD_NUMBER}"
+
+def getImageTag() {
+    def dateFormat = new java.text.SimpleDateFormat('yyyyMMddHHmmss')
+    def currentDate = new Date()
+    return dateFormat.format(currentDate)
+}
+
+podTemplate(
+    label: "${PIPELINE_ID}",
+    serviceAccount: 'jenkins',
+    containers: [
+        containerTemplate(name: 'node', image: 'node:20-slim', ttyEnabled: true, command: 'cat'),
+        containerTemplate(name: 'podman', image: "mgoltzsche/podman", ttyEnabled: true, command: 'cat', privileged: true),
+        containerTemplate(name: 'sonar-scanner', image: 'sonarsource/sonar-scanner-cli:latest', command: 'cat', ttyEnabled: true),
+        containerTemplate(name: 'git-yq', image: 'mikefarah/yq:latest', command: 'cat', ttyEnabled: true)
+    ],
+    volumes: [
+        emptyDirVolume(mountPath: '/opt/sonar-scanner/.sonar/cache', memory: false)
+    ]
+) {
+    node(PIPELINE_ID) {
+        def props
+        def imageTag = getImageTag()
+        def sonarScannerHome = '/opt/sonar-scanner'
+
+        stage("Get Source") {
+            checkout scm
+            props = readProperties file: "deployment/deploy_env_vars"
+        }
+
+        stage('Code Analysis & Quality Gate') {
+            container('node') {
+                sh "npm install"
+                sh "npm test -- --coverage --passWithNoTests"
+            }
+            
+            container('sonar-scanner') {
+                withSonarQubeEnv('SonarQube') {
+                    sh """
+                        ${sonarScannerHome}/bin/sonar-scanner \
+                        -Dsonar.projectKey=${props.root_project}-${props.service_name}-${props.teamid} \
+                        -Dsonar.sources=src \
+                        -Dsonar.tests=src \
+                        -Dsonar.test.inclusions=src/**/*.test.js,src/**/*.test.jsx \
+                        -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+                    """
+                }
+            }
+            
+            timeout(time: 10, unit: 'MINUTES') {
+                def qg = waitForQualityGate()
+                if (qg.status != 'OK') {
+                    error "Pipeline aborted due to quality gate failure: ${qg.status}"
+                }
+            }
+        }
+
+        stage('Build & Push Image') {
+            container('podman') {
+                withCredentials([usernamePassword(
+                    credentialsId: 'acr-credentials',
+                    usernameVariable: 'USERNAME',
+                    passwordVariable: 'PASSWORD'
+                )]) {
+                    def imagePath = "${props.registry}/${props.image_org}/${props.service_name}:${imageTag}"
+                    
+                    sh """
+                        podman login ${props.registry} --username \$USERNAME --password \$PASSWORD
+
+                        podman build \
+                            --build-arg PROJECT_FOLDER="." \
+                            --build-arg BUILD_FOLDER="deployment/container" \
+                            --build-arg EXPORT_PORT="${props.export_port}" \
+                            --build-arg REACT_APP_MEMBER_URL="http://${props.ingress_host}/api/auth" \
+                            --build-arg REACT_APP_MYSUB_URL="http://${props.ingress_host}/api/mysub" \
+                            --build-arg REACT_APP_RECOMMEND_URL="http://${props.ingress_host}/api/recommend" \
+                            -f deployment/container/Dockerfile-lifesub-web \
+                            -t ${imagePath} .
+                        
+                        podman push ${imagePath}
+                    """
+                }
+            }
+        }
+
+        stage('Update Manifest Repository') {
+            container('git-yq') {
+                withCredentials([usernamePassword(
+                    credentialsId: 'github-credentials-kros235',
+                    usernameVariable: 'GIT_USERNAME',
+                    passwordVariable: 'GIT_PASSWORD'
+                )]) {
+                    sh """
+                        # Git 설정
+                        git config --global user.name "Jenkins"
+                        git config --global user.email "jenkins@example.com"
+                        
+                        # Manifest repository clone
+                        git clone https://\${GIT_USERNAME}:\${GIT_PASSWORD}@github.com/kros235/lifesub-manifest.git
+                        cd lifesub-manifest
+                        
+                        # Frontend deployment 파일 업데이트
+                        echo "Updating frontend deployment..."
+                        yq eval '.spec.template.spec.containers[0].image = "${props.registry}/${props.image_org}/${props.service_name}:${imageTag}"' -i lifesub-web/frontend-deployment.yaml
+                        
+                        echo "=== Updated frontend-deployment.yaml ==="
+                        cat lifesub-web/frontend-deployment.yaml
+                        echo "========================================"
+                        
+                        # Git commit and push
+                        git add .
+                        git commit -m "Update frontend service image to ${imageTag}"
+                        git push origin main
+                        
+                        echo ""
+                        echo "🎉 Frontend service manifest updated successfully!"
+                        echo "📱 Service: ${props.service_name}"
+                        echo "🏷️  Image Tag: ${imageTag}"
+                        echo "🔗 ArgoCD will automatically sync the changes"
+                        echo ""
+                    """
+                }
+            }
+        }
+    }
+}
