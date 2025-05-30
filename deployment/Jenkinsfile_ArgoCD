@@ -13,7 +13,7 @@ podTemplate(
         containerTemplate(name: 'node', image: 'node:20-slim', ttyEnabled: true, command: 'cat'),
         containerTemplate(name: 'podman', image: "mgoltzsche/podman", ttyEnabled: true, command: 'cat', privileged: true),
         containerTemplate(name: 'sonar-scanner', image: 'sonarsource/sonar-scanner-cli:latest', command: 'cat', ttyEnabled: true),
-        containerTemplate(name: 'git-yq', image: 'mikefarah/yq:latest', command: 'cat', ttyEnabled: true)
+	containerTemplate(name: 'git', image: 'alpine/git:latest', command: 'cat', ttyEnabled: true)
     ],
     volumes: [
         emptyDirVolume(mountPath: '/opt/sonar-scanner/.sonar/cache', memory: false)
